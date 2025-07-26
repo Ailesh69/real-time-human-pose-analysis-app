@@ -15,7 +15,8 @@ HAND_LANDMARK_COLOR = (121, 22, 76)  # Dark purple for hand landmarks
 HAND_CONNECTION_COLOR = (121, 44, 250) # Lighter purple for hand connections
 
 # Display box properties
-BOX_COLOR = (0, 0, 0) # Black background for info boxes
+BOX_COLOR_BGR = (0, 0, 0) # Black background for info boxes
+BOX_ALPHA = 0.3 # **Transparency factor (Reduced for more "clear see-through" effect)**
 TEXT_COLOR = (255, 255, 255) # White text
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 FONT_SCALE = 0.6
@@ -24,8 +25,13 @@ TEXT_THICKNESS = 1
 
 # --- Helper Function for Angle Calculation ---
 def calculate_angle(a, b, c):
+    """
+    Calculates the angle (in degrees) formed by three 2D points.
+    The angle is calculated at point 'b'.
     
-
+    Returns:
+        float: The angle in degrees (between 0 and 180).
+    """
     a = np.array(a)
     b = np.array(b)
     c = np.array(c)
@@ -164,6 +170,86 @@ def detect_gesture(pose_landmarks, hand_landmarks_list, image_width, image_heigh
 
     return gesture
 
+# --- Helper Function for Hand Number Detection ---
+def detect_hand_number(hand_landmarks, mp_hands):
+    """
+    Detects the number (0-5) being shown by a single hand.
+    Assumes hand is roughly facing the camera.
+    """
+    if not hand_landmarks:
+        return -1
+
+    lm = hand_landmarks.landmark
+
+    # Finger tip landmarks (normalized coordinates)
+    thumb_tip = lm[mp_hands.HandLandmark.THUMB_TIP]
+    index_tip = lm[mp_hands.HandLandmark.INDEX_FINGER_TIP]
+    middle_tip = lm[mp_hands.HandLandmark.MIDDLE_FINGER_TIP]
+    ring_tip = lm[mp_hands.HandLandmark.RING_FINGER_TIP]
+    pinky_tip = lm[mp_hands.HandLandmark.PINKY_TIP]
+
+    # Finger PIP (Proximal Interphalangeal) landmarks (normalized coordinates)
+    thumb_ip = lm[mp_hands.HandLandmark.THUMB_IP]
+    index_pip = lm[mp_hands.HandLandmark.INDEX_FINGER_PIP]
+    middle_pip = lm[mp_hands.HandLandmark.MIDDLE_FINGER_PIP]
+    ring_pip = lm[mp_hands.HandLandmark.RING_FINGER_PIP]
+    pinky_pip = lm[mp_hands.HandLandmark.PINKY_PIP]
+
+    # Finger MCP (Metacarpophalangeal) landmarks (normalized coordinates)
+    thumb_mcp = lm[mp_hands.HandLandmark.THUMB_MCP]
+    index_mcp = lm[mp_hands.HandLandmark.INDEX_FINGER_MCP]
+    middle_mcp = lm[mp_hands.HandLandmark.MIDDLE_FINGER_MCP]
+    ring_mcp = lm[mp_hands.HandLandmark.RING_FINGER_MCP]
+    pinky_mcp = lm[mp_hands.HandLandmark.PINKY_MCP]
+
+    # Helper to check if a finger is straight (angle is large)
+    def is_finger_straight_for_number(tip_lm, pip_lm, mcp_lm, threshold=160):
+        try:
+            return calculate_angle([mcp_lm.x, mcp_lm.y], [pip_lm.x, pip_lm.y], [tip_lm.x, tip_lm.y]) > threshold
+        except:
+            return False
+
+    # Check which fingers are up (straight and tip is higher than PIP/MCP)
+    fingers_up = [0, 0, 0, 0, 0] # [Thumb, Index, Middle, Ring, Pinky]
+
+    # Thumb: Check if extended and its tip is generally 'up' (smaller Y-coordinate) relative to its MCP
+    # This is a common and relatively robust heuristic for thumb extension for counting.
+    if is_finger_straight_for_number(thumb_tip, thumb_ip, thumb_mcp, 150) and \
+       thumb_tip.y < thumb_mcp.y - 0.03: # Thumb tip is significantly above its base
+        fingers_up[0] = 1
+
+    # Other fingers: Check if tip is significantly higher (smaller Y-coordinate) than PIP joint
+    # Thresholds are normalized coordinates (0.0 to 1.0)
+    if index_tip.y < index_pip.y - 0.03: fingers_up[1] = 1
+    if middle_tip.y < middle_pip.y - 0.03: fingers_up[2] = 1
+    if ring_tip.y < ring_pip.y - 0.03: fingers_up[3] = 1
+    if pinky_tip.y < pinky_pip.y - 0.03: fingers_up[4] = 1
+
+    # --- Number Counting Logic (0-5) ---
+    # This logic is much cleaner and directly maps finger states to numbers.
+    # It checks for specific combinations of fingers being up.
+    
+    if fingers_up == [0,0,0,0,0]: # All fingers down
+        return 0
+    elif fingers_up == [1,0,0,0,0]: # Only thumb up
+        return 1 # Common for 1 (side thumb)
+    elif fingers_up == [0,1,0,0,0]: # Only index up (classic 1)
+        return 1
+    elif fingers_up == [0,1,1,0,0]: # Index and Middle up (classic 2)
+        return 2
+    elif fingers_up == [1,1,0,0,0]: # Thumb and Index up (like 2 with thumb out)
+        return 2
+    elif fingers_up == [0,1,1,1,0]: # Index, Middle, Ring up (classic 3)
+        return 3
+    elif fingers_up == [1,1,1,0,0]: # Thumb, Index, Middle up (like 3 with thumb out)
+        return 3
+    elif fingers_up == [0,1,1,1,1]: # All four fingers up (classic 4)
+        return 4
+    elif fingers_up == [1,1,1,1,1]: # All five fingers up (classic 5)
+        return 5
+    
+    return -1 # Not a recognized number or ambiguous
+
 # --- Main Program Logic ---
 def main():
     mp_drawing = mp.solutions.drawing_utils
@@ -195,8 +281,7 @@ def main():
                 print("WARNING: Ignoring empty camera frame or stream ended. Attempting next frame...")
                 continue
 
-            # Flip for selfie view, convert to RGB for MediaPipe
-            image = cv2.cvtColor(cv2.flip(frame, 1), cv2.COLOR_BGR2RGB)
+            image = cv2.cvtColor(cv2.flip(frame, 1), cv2.COLOR_BGR2RGB) # Flip for selfie view, convert to RGB
             
             image.flags.writeable = False # Make image read-only for MediaPipe processing
             
@@ -209,7 +294,6 @@ def main():
 
             # --- EMOTION DETECTION LOGIC (Placeholder) ---
             if face_detector_for_emotion is not None:
-                # Use original frame for face detection (can be BGR)
                 gray_frame_for_emotion = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) 
                 faces = face_detector_for_emotion.detectMultiScale(gray_frame_for_emotion, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
 
@@ -227,7 +311,7 @@ def main():
                     mp_drawing.DrawingSpec(color=POSE_CONNECTION_COLOR, thickness=2, circle_radius=2)
                 )
                 
-                # --- Angle Calculations & Display Box (Top-Left Corner) ---
+                # --- Angle Calculations & Gesture Display Box (Top-Left Corner) ---
                 angles_to_display = {}
                 try:
                     landmarks = pose_results.pose_landmarks.landmark
@@ -268,17 +352,37 @@ def main():
                     # print(f"Error calculating angles: {e}")
                     pass
 
-                # Draw Angle Display Box
+                # Add Gesture to the angles_to_display for combined display
+                detected_gesture_text = "No Gesture"
+                if pose_results.pose_landmarks or hand_results.multi_hand_landmarks:
+                    detected_gesture_text = detect_gesture(
+                        pose_results.pose_landmarks, 
+                        hand_results.multi_hand_landmarks, 
+                        image.shape[1], # image width
+                        image.shape[0], # image height
+                        mp_pose, mp_hands
+                    )
+                angles_to_display["Gesture"] = detected_gesture_text # Add gesture to the dict
+
+                # Draw Angle & Gesture Display Box
                 box_start_x_angles, box_start_y_angles = 10, 10
-                box_width_angles, box_height_angles = 280, 150
-                cv2.rectangle(image, (box_start_x_angles, box_start_y_angles), 
+                box_width_angles, box_height_angles = 250, 180 # Reduced size, increased height for gesture
+                
+                # Create a transparent overlay for the box
+                overlay = image.copy()
+                cv2.rectangle(overlay, (box_start_x_angles, box_start_y_angles), 
                               (box_start_x_angles + box_width_angles, box_start_y_angles + box_height_angles), 
-                              BOX_COLOR, -1)
+                              BOX_COLOR_BGR, -1)
+                image = cv2.addWeighted(overlay, BOX_ALPHA, image, 1 - BOX_ALPHA, 0)
 
                 y_offset = box_start_y_angles + LINE_HEIGHT
-                for label, angle_val in angles_to_display.items():
-                    cv2.putText(image, f"{label}: {angle_val} deg",
-                                (box_start_x_angles + 10, y_offset), FONT, FONT_SCALE, TEXT_COLOR, TEXT_THICKNESS, cv2.LINE_AA)
+                for label, val in angles_to_display.items():
+                    if label == "Gesture":
+                        cv2.putText(image, f"{label}: {val}",
+                                    (box_start_x_angles + 10, y_offset + LINE_HEIGHT), FONT, FONT_SCALE, (0, 255, 255), TEXT_THICKNESS, cv2.LINE_AA) # Cyan text for gesture
+                    else:
+                        cv2.putText(image, f"{label}: {val} deg",
+                                    (box_start_x_angles + 10, y_offset), FONT, FONT_SCALE, TEXT_COLOR, TEXT_THICKNESS, cv2.LINE_AA)
                     y_offset += LINE_HEIGHT
 
             # Draw hand landmarks
@@ -290,32 +394,53 @@ def main():
                         mp_drawing.DrawingSpec(color=HAND_CONNECTION_COLOR, thickness=2, circle_radius=2)
                     )
             
-            # --- Gesture Detection & Display Box (Top-Right Corner) ---
-            detected_gesture_text = "No Gesture"
-            if pose_results.pose_landmarks or hand_results.multi_hand_landmarks:
-                detected_gesture_text = detect_gesture(
-                    pose_results.pose_landmarks, 
-                    hand_results.multi_hand_landmarks, 
-                    image.shape[1], # image width
-                    image.shape[0], # image height
-                    mp_pose, mp_hands
-                )
+            # --- Sign Maths Display (Top-Right Corner) ---
+            left_hand_number = -1
+            right_hand_number = -1
+            total_sum = "N/A" # Default to N/A if no valid numbers
             
-            # Define box properties for gesture display
-            box_width_gesture, box_height_gesture = 250, 50
-            box_start_x_gesture = image.shape[1] - box_width_gesture - 10
-            box_start_y_gesture = 10
+            if hand_results.multi_hand_landmarks:
+                for hand_idx, hand_landmarks in enumerate(hand_results.multi_hand_landmarks):
+                    handedness_classification = hand_results.multi_handedness[hand_idx].classification[0]
+                    hand_label = handedness_classification.label # "Left" or "Right"
+
+                    current_hand_number = detect_hand_number(hand_landmarks, mp_hands)
+                    
+                    if hand_label == "Left":
+                        left_hand_number = current_hand_number
+                    elif hand_label == "Right":
+                        right_hand_number = current_hand_number
             
-            cv2.rectangle(image, (box_start_x_gesture, box_start_y_gesture),
-                          (box_start_x_gesture + box_width_gesture, box_start_y_gesture + box_height_gesture),
-                          BOX_COLOR, -1)
+            # Calculate total sum only if at least one hand has a valid number
+            if left_hand_number != -1 or right_hand_number != -1:
+                sum_val = 0
+                if left_hand_number != -1:
+                    sum_val += left_hand_number
+                if right_hand_number != -1:
+                    sum_val += right_hand_number
+                total_sum = sum_val
 
-            cv2.putText(image, f"Gesture: {detected_gesture_text}",
-                        (box_start_x_gesture + 10, box_start_y_gesture + 30),
-                        FONT, FONT_SCALE, TEXT_COLOR, TEXT_THICKNESS, cv2.LINE_AA)
+            # Draw Sign Maths Display Box
+            box_width_math, box_height_math = 250, 100 # Reduced size, same as new gesture box
+            box_start_x_math = image.shape[1] - box_width_math - 10 # 10 pixels from right edge
+            box_start_y_math = 10 # 10 pixels from top edge
+            
+            # Create a transparent overlay for the box
+            overlay_math = image.copy()
+            cv2.rectangle(overlay_math, (box_start_x_math, box_start_y_math),
+                          (box_start_x_math + box_width_math, box_start_y_math + box_height_math),
+                          BOX_COLOR_BGR, -1)
+            image = cv2.addWeighted(overlay_math, BOX_ALPHA, image, 1 - BOX_ALPHA, 0)
 
-            cv2.imshow("MediaPipe Pose & Hands & Gestures", image)
-            if cv2.waitKey(5) & 0xFF == 27:
+            cv2.putText(image, f"Left Hand: {left_hand_number if left_hand_number != -1 else 'N/A'}",
+                        (box_start_x_math + 10, box_start_y_math + LINE_HEIGHT), FONT, FONT_SCALE, TEXT_COLOR, TEXT_THICKNESS, cv2.LINE_AA)
+            cv2.putText(image, f"Right Hand: {right_hand_number if right_hand_number != -1 else 'N/A'}",
+                        (box_start_x_math + 10, box_start_y_math + LINE_HEIGHT * 2), FONT, FONT_SCALE, TEXT_COLOR, TEXT_THICKNESS, cv2.LINE_AA)
+            cv2.putText(image, f"Total: {total_sum}",
+                        (box_start_x_math + 10, box_start_y_math + LINE_HEIGHT * 3), FONT, FONT_SCALE, (0, 255, 255), TEXT_THICKNESS + 1, cv2.LINE_AA) # Cyan total, slightly thicker
+
+            cv2.imshow("MediaPipe Pose & Hands & Gestures & Maths", image) # Window title updated
+            if cv2.waitKey(5) & 0xFF == 27: # Press 'ESC' to exit
                 print("ESC key pressed. Exiting loop.")
                 break
 
@@ -325,4 +450,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-    
